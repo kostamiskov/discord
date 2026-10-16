@@ -485,7 +485,19 @@ class SetupConfirmation(discord.ui.View):
             await interaction.edit_original_response(view=self)
         except discord.HTTPException:
             pass
-        await interaction.followup.send("Setup complete:\n" + "\n".join(f"• {line}" for line in results), ephemeral=True)
+        result_text = "Setup complete:\n" + "\n".join(f"• {line}" for line in results)
+        if len(result_text) > 2_000:
+            result_file = discord.File(
+                io.BytesIO(result_text.encode("utf-8")),
+                filename="travian-setup-results.txt",
+            )
+            await interaction.followup.send(
+                "Setup complete. The full result is attached.",
+                file=result_file,
+                ephemeral=True,
+            )
+        else:
+            await interaction.followup.send(result_text, ephemeral=True)
         self.stop()
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, emoji="✖️")
@@ -563,7 +575,8 @@ async def setup_server(interaction: discord.Interaction) -> None:
     await interaction.response.defer(ephemeral=True, thinking=True)
     plan = await build_plan(interaction.guild)
     text = "\n".join(plan.lines())
-    if len(text) > 3_800:
+    preview_message = f"**Dry-run preview — no changes made**\n```text\n{text}\n```"
+    if len(preview_message) > 2_000:
         preview_file = discord.File(io.BytesIO(text.encode("utf-8")), filename="travian-setup-preview.txt")
         await interaction.followup.send(
             "Dry-run preview attached. Review it, then confirm within five minutes.",
@@ -573,7 +586,7 @@ async def setup_server(interaction: discord.Interaction) -> None:
         )
     else:
         await interaction.followup.send(
-            f"**Dry-run preview — no changes made**\n```text\n{text}\n```",
+            preview_message,
             view=SetupConfirmation(interaction.user.id, interaction.guild.id),
             ephemeral=True,
         )
