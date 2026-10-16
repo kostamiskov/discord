@@ -23,6 +23,7 @@ logging.basicConfig(
 log = logging.getLogger("travian-passion-bot")
 
 SETUP_MARKER = "Travian Is a Passion • managed setup v1"
+BOT_RELEASE = "2026.10.17-final-fixed"
 RULES_BUTTON_ID = "travian-passion:accept-rules:v1"
 TRIBE_SELECT_ID = "travian-passion:tribe-select:v1"
 SPEED_SELECT_ID = "travian-passion:speed-select:v1"
@@ -158,7 +159,7 @@ def parse_coordinates(value: str) -> tuple[int, int]:
 @dataclass
 class PermissionChange:
     channel: discord.abc.GuildChannel
-    role: discord.Role
+    target: discord.Role | discord.Member
     view_channel: bool
     send_messages: bool | None = None
     read_message_history: bool | None = None
@@ -169,8 +170,11 @@ class PermissionChange:
             values.append(f"Send Messages={'allow' if self.send_messages else 'deny'}")
         if self.read_message_history is not None:
             values.append(f"Read History={'allow' if self.read_message_history else 'deny'}")
-        role_label = "@everyone" if self.role.is_default() else f"@{self.role.name}"
-        return f"Permission: #{self.channel.name} — {role_label}: " + ", ".join(values)
+        if isinstance(self.target, discord.Role):
+            target_label = "@everyone" if self.target.is_default() else f"@{self.target.name}"
+        else:
+            target_label = f"{self.target.mention} (bot account)"
+        return f"Permission: #{self.channel.name} — {target_label}: " + ", ".join(values)
 
 
 @dataclass
@@ -237,14 +241,13 @@ async def build_plan(guild: discord.Guild) -> SetupPlan:
     if missing_staff:
         plan.warnings.append("Staff roles not found: " + ", ".join(missing_staff))
 
-    writer_roles = list(staff_roles)
+    writer_targets: list[discord.Role | discord.Member] = list(staff_roles)
     bot_member = guild.me
-    if (
-        bot_member
-        and bot_member.top_role != guild.default_role
-        and bot_member.top_role not in writer_roles
-    ):
-        writer_roles.append(bot_member.top_role)
+    if bot_member:
+        # A bot cannot modify the overwrite for its own managed integration role.
+        # A member-specific overwrite grants the same channel access without that
+        # Discord role-hierarchy conflict.
+        writer_targets.append(bot_member)
 
     for channel_name in SETTINGS.staff_channels:
         channel = find_channel(guild, channel_name)
@@ -256,8 +259,8 @@ async def build_plan(guild: discord.Guild) -> SetupPlan:
         if everyone_overwrite.view_channel is not False:
             plan.permissions.append(PermissionChange(channel, guild.default_role, view_channel=False))
 
-        for role in writer_roles:
-            overwrite = channel.overwrites_for(role)
+        for target in writer_targets:
+            overwrite = channel.overwrites_for(target)
             if (
                 overwrite.view_channel is not True
                 or overwrite.send_messages is not True
@@ -266,7 +269,7 @@ async def build_plan(guild: discord.Guild) -> SetupPlan:
                 plan.permissions.append(
                     PermissionChange(
                         channel,
-                        role,
+                        target,
                         view_channel=True,
                         send_messages=True,
                         read_message_history=True,
@@ -295,8 +298,8 @@ async def build_plan(guild: discord.Guild) -> SetupPlan:
                 )
             )
 
-        for role in writer_roles:
-            overwrite = channel.overwrites_for(role)
+        for target in writer_targets:
+            overwrite = channel.overwrites_for(target)
             if (
                 overwrite.view_channel is not True
                 or overwrite.send_messages is not True
@@ -305,7 +308,7 @@ async def build_plan(guild: discord.Guild) -> SetupPlan:
                 plan.permissions.append(
                     PermissionChange(
                         channel,
-                        role,
+                        target,
                         view_channel=True,
                         send_messages=True,
                         read_message_history=True,
@@ -316,7 +319,7 @@ async def build_plan(guild: discord.Guild) -> SetupPlan:
             role.name
             for role, overwrite in channel.overwrites.items()
             if isinstance(role, discord.Role)
-            and role not in writer_roles
+            and role not in writer_targets
             and role != guild.default_role
             and overwrite.send_messages is True
         ]
@@ -606,14 +609,14 @@ async def apply_plan(plan: SetupPlan) -> list[str]:
         results.append(f"Created role @{role_name}")
 
     for change in plan.permissions:
-        overwrite = change.channel.overwrites_for(change.role)
+        overwrite = change.channel.overwrites_for(change.target)
         overwrite.view_channel = change.view_channel
         if change.send_messages is not None:
             overwrite.send_messages = change.send_messages
         if change.read_message_history is not None:
             overwrite.read_message_history = change.read_message_history
         await change.channel.set_permissions(
-            change.role,
+            change.target,
             overwrite=overwrite,
             reason="Confirmed staff-channel protection",
         )
@@ -1247,6 +1250,7 @@ async def on_member_update(before: discord.Member, after: discord.Member) -> Non
 @bot.event
 async def on_ready() -> None:
     await bot.change_presence(activity=discord.Game(name="/help • Travian Is a Passion"))
+    log.info("Running release %s", BOT_RELEASE)
     log.info("Logged in as %s (%s)", bot.user, bot.user.id if bot.user else "unknown")
 
 
